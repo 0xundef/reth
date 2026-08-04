@@ -254,6 +254,7 @@ impl TestHarness {
             changeset_cache.clone(),
             state_trie_overlays,
             runtime.clone(),
+            None,
         );
 
         let tree = EngineApiTreeHandler::new(
@@ -462,6 +463,7 @@ impl ValidatorTestHarness {
             changeset_cache,
             StateTrieOverlayManager::default(),
             reth_tasks::Runtime::test(),
+            None,
         );
 
         Self { harness, validator, metrics: TestMetrics::default() }

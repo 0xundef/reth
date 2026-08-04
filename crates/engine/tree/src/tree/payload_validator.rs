@@ -95,6 +95,7 @@
 //! before a payload build job starts. On failure, the engine returns
 //! `INVALID_PAYLOAD_ATTRIBUTES` without rolling back the forkchoice update.
 
+use crate::block_trace::{BlockTraceHandle, CallTreeInspector, TraceEvent, TxTraceCtx};
 use crate::tree::{
     error::{InsertBlockError, InsertBlockErrorKind, InsertPayloadError},
     instrumented_state::{InstrumentedStateProvider, StateProviderMetrics, StateProviderStats},
@@ -294,6 +295,9 @@ where
     /// State-root strategy used to prepare per-block commitment tasks.
     #[debug(skip)]
     state_root_strategy: Arc<dyn StateRootStrategy<Evm::Primitives, P, Evm>>,
+    /// Optional call-tree streaming: when set, a [`CallTreeInspector`] is attached to the
+    /// block-import EVM and per-transaction call trees are emitted over WebSocket.
+    block_trace: Option<BlockTraceHandle>,
 }
 
 impl<N, P, Evm, V> BasicEngineValidator<P, Evm, V>
@@ -334,6 +338,7 @@ where
         changeset_cache: ChangesetCache,
         state_trie_overlays: StateTrieOverlayManager<N>,
         runtime: reth_tasks::Runtime,
+        block_trace: Option<BlockTraceHandle>,
     ) -> Self {
         let precompile_cache_map = PrecompileCacheMap::default();
         let payload_processor = PayloadProcessor::new(
@@ -357,6 +362,7 @@ where
             runtime,
             state_trie_overlays,
             state_root_strategy: Arc::new(DefaultStateRootStrategy::default()),
+            block_trace,
         }
     }
 
@@ -992,6 +998,52 @@ where
         T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
         Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
     {
+        if let Some(bt) = &self.block_trace {
+            let inspector = CallTreeInspector::new(bt.sender.clone());
+            let trace_ctx = TxTraceCtx {
+                block_hash: env.hash,
+                block_number: input.num_hash().number,
+                sender: bt.sender.clone(),
+            };
+            self.execute_block_with_trace(
+                state_provider,
+                env,
+                input,
+                handle,
+                state_hook,
+                inspector,
+                &trace_ctx,
+            )
+        } else {
+            self.execute_block_default(state_provider, env, input, handle, state_hook)
+        }
+    }
+
+    /// Execute a block with the default `NoOpInspector` (no call-tree capture).
+    #[expect(clippy::type_complexity)]
+    fn execute_block_default<S, Err, T>(
+        &mut self,
+        state_provider: S,
+        env: ExecutionEnv<Evm>,
+        input: &BlockOrPayload<T>,
+        handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err, N::Receipt>,
+        state_hook: Option<Box<dyn OnStateHook + 'static>>,
+    ) -> Result<
+        (
+            BlockExecutionOutput<N::Receipt>,
+            Vec<Address>,
+            ReceiptRootReceiver,
+            Option<BlockAccessList>,
+        ),
+        InsertBlockErrorKind,
+    >
+    where
+        S: StateProvider + Send,
+        Err: core::error::Error + Send + Sync + 'static,
+        V: PayloadValidator<T, Block = N::Block>,
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+        Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
+    {
         debug!(target: "engine::tree::payload_validator", "Executing block");
 
         let has_bal = env.decoded_bal.is_some();
@@ -1049,6 +1101,118 @@ where
             &receipt_tx,
             &executed_tx_index,
             has_bal,
+            None,
+        )?;
+        drop(receipt_tx);
+
+        // Finish execution and get the result
+        let post_exec_start = Instant::now();
+        let (_evm, result) = debug_span!(target: "engine::tree", "BlockExecutor::finish")
+            .in_scope(|| executor.finish())
+            .map(|(evm, result)| (evm.into_db(), result))?;
+        self.metrics.record_post_execution(post_exec_start.elapsed());
+
+        // Merge transitions into bundle state
+        debug_span!(target: "engine::tree", "merge_transitions")
+            .in_scope(|| db.merge_transitions(BundleRetention::Reverts));
+
+        let built_bal = if has_bal { db.take_built_alloy_bal() } else { None };
+        let output = BlockExecutionOutput { result, state: db.take_bundle() };
+
+        let execution_duration = execution_start.elapsed();
+        self.metrics.record_block_execution(&output, execution_duration);
+        self.metrics.record_block_execution_gas_bucket(output.result.gas_used, execution_duration);
+        debug!(target: "engine::tree::payload_validator", elapsed = ?execution_duration, "Executed block");
+
+        Ok((output, senders, result_rx, built_bal))
+    }
+
+    /// Like [`Self::execute_block_default`] but attaches a [`CallTreeInspector`] to the EVM so
+    /// per-transaction call trees are emitted over the block-trace channel during import.
+    #[expect(clippy::type_complexity)]
+    fn execute_block_with_trace<S, Err, T>(
+        &mut self,
+        state_provider: S,
+        env: ExecutionEnv<Evm>,
+        input: &BlockOrPayload<T>,
+        handle: &mut PayloadHandle<impl ExecutableTxFor<Evm>, Err, N::Receipt>,
+        state_hook: Option<Box<dyn OnStateHook + 'static>>,
+        inspector: CallTreeInspector,
+        trace_ctx: &TxTraceCtx,
+    ) -> Result<
+        (
+            BlockExecutionOutput<N::Receipt>,
+            Vec<Address>,
+            ReceiptRootReceiver,
+            Option<BlockAccessList>,
+        ),
+        InsertBlockErrorKind,
+    >
+    where
+        S: StateProvider + Send,
+        Err: core::error::Error + Send + Sync + 'static,
+        V: PayloadValidator<T, Block = N::Block>,
+        T: PayloadTypes<BuiltPayload: BuiltPayload<Primitives = N>>,
+        Evm: ConfigureEngineEvm<T::ExecutionData, Primitives = N>,
+    {
+        debug!(target: "engine::tree::payload_validator", "Executing block with call-tree capture");
+
+        let has_bal = env.decoded_bal.is_some();
+        let mut db = debug_span!(target: "engine::tree", "build_state_db").in_scope(|| {
+            State::builder()
+                .with_database(StateProviderDatabase::new(state_provider))
+                .with_bundle_update()
+                .with_bal_builder_if(has_bal)
+                .build()
+        });
+
+        let (spec_id, mut executor) = {
+            let _span = debug_span!(target: "engine::tree", "create_evm").entered();
+            let spec_id = *env.evm_env.spec_id();
+            let evm_config = self.evm_config.clone().with_jit_support();
+            let evm = evm_config.evm_with_env_and_inspector(&mut db, env.evm_env, inspector);
+            let ctx = self
+                .execution_ctx_for(input)
+                .map_err(|e| InsertBlockErrorKind::Other(Box::new(e)))?;
+            let executor = self.evm_config.create_executor(evm, ctx);
+            (spec_id, executor)
+        };
+
+        if !self.config.precompile_cache_disabled() {
+            let _span = debug_span!(target: "engine::tree", "setup_precompile_cache").entered();
+            executor.evm_mut().precompiles_mut().map_cacheable_precompiles(
+                |address, precompile| {
+                    let metrics = self
+                        .precompile_cache_metrics
+                        .entry(*address)
+                        .or_insert_with(|| CachedPrecompileMetrics::new_with_address(*address))
+                        .clone();
+                    CachedPrecompile::wrap(
+                        precompile,
+                        self.precompile_cache_map.cache_for_address(*address),
+                        spec_id,
+                        Some(metrics),
+                    )
+                },
+            );
+        }
+
+        let transaction_count = input.transaction_count();
+        let (receipt_tx, result_rx) = self.spawn_receipt_root_task(transaction_count);
+        let executed_tx_index = Arc::clone(handle.executed_tx_index());
+        executor.evm_mut().db_mut().set_state_hook(state_hook);
+
+        let execution_start = Instant::now();
+
+        // Execute all transactions and finalize
+        let (executor, senders) = self.execute_transactions(
+            executor,
+            transaction_count,
+            handle.iter_transactions(),
+            &receipt_tx,
+            &executed_tx_index,
+            has_bal,
+            Some(trace_ctx),
         )?;
         drop(receipt_tx);
 
@@ -1198,6 +1362,7 @@ where
         receipt_tx: &crossbeam_channel::Sender<IndexedReceipt<N::Receipt>>,
         executed_tx_index: &AtomicUsize,
         has_bal: bool,
+        trace_ctx: Option<&TxTraceCtx>,
     ) -> Result<(E, Vec<Address>), BlockExecutionError>
     where
         E: BlockExecutor<Receipt = N::Receipt, Evm: alloy_evm::Evm<DB = &'a mut State<DB>>>,
@@ -1238,6 +1403,18 @@ where
             let tx_signer = *<Tx as alloy_evm::RecoveredTx<InnerTx>>::signer(&tx);
 
             senders.push(tx_signer);
+
+            // Emit the tx-start marker so the WS push task can pair each call tree
+            // (emitted by the inspector when the top-level frame finishes) with its tx.
+            if let Some(trace) = trace_ctx {
+                let _ = trace.sender.try_send(TraceEvent::TxStart {
+                    block_hash: trace.block_hash,
+                    block_number: trace.block_number,
+                    index: senders.len() - 1,
+                    hash: *tx.tx().tx_hash(),
+                    signer: tx_signer,
+                });
+            }
 
             let _enter = tracing::enabled!(target: "engine::tree", Level::TRACE).then(|| {
                 tracing::trace_span!(
