@@ -2,8 +2,9 @@
 
 use crate::{
     args::{
-        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, JitArgs, NetworkArgs,
-        PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs, TxPoolArgs,
+        BlockTraceArgs, DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, JitArgs,
+        NetworkArgs, PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs,
+        TxPoolArgs,
     },
     dirs::{ChainPath, DataDirPath},
     utils::get_single_header,
@@ -158,6 +159,9 @@ pub struct NodeConfig<ChainSpec> {
 
     /// All JIT related arguments with --jit prefix
     pub jit: JitArgs,
+
+    /// All block call-tree streaming related arguments with --block-trace prefix
+    pub block_trace: BlockTraceArgs,
 }
 
 impl NodeConfig<ChainSpec> {
@@ -191,6 +195,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files: StaticFilesArgs::default(),
             storage: StorageArgs::default(),
             jit: JitArgs::default(),
+            block_trace: BlockTraceArgs::default(),
         }
     }
 
@@ -293,6 +298,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files,
             storage,
             jit,
+            block_trace: BlockTraceArgs::default(),
         }
     }
 
@@ -592,6 +598,7 @@ impl<ChainSpec> NodeConfig<ChainSpec> {
             static_files: self.static_files,
             storage: self.storage,
             jit: self.jit,
+            block_trace: self.block_trace,
         }
     }
 
@@ -635,6 +642,7 @@ impl<ChainSpec> Clone for NodeConfig<ChainSpec> {
             static_files: self.static_files,
             storage: self.storage,
             jit: self.jit.clone(),
+            block_trace: self.block_trace.clone(),
         }
     }
 }

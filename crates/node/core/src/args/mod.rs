@@ -80,5 +80,9 @@ pub use storage::{DefaultStorageValues, StorageArgs};
 mod jit;
 pub use jit::JitArgs;
 
+/// `BlockTraceArgs` for configuring call-tree streaming over WebSocket.
+mod block_trace;
+pub use block_trace::BlockTraceArgs;
+
 mod error;
 pub mod types;

@@ -4,6 +4,7 @@ pub use jsonrpsee::{
     core::middleware::layer::Either,
     server::middleware::rpc::{RpcService, RpcServiceBuilder},
 };
+use reth_engine_tree::block_trace::{spawn_ws_task, BlockTraceHandle, FilterConfig};
 use reth_engine_tree::tree::WaitForCaches;
 pub use reth_engine_tree::tree::{BasicEngineValidator, EngineValidator};
 pub use reth_rpc_builder::{
@@ -1468,6 +1469,26 @@ where
         let data_dir = ctx.config.datadir.clone().resolve_datadir(ctx.config.chain.chain());
         let invalid_block_hook = ctx.create_invalid_block_hook(&data_dir).await?;
 
+        let block_trace = if ctx.config.block_trace.enabled {
+            let url = ctx.config.block_trace.ws_url.clone().ok_or_else(|| {
+                eyre::eyre!("--block-trace.ws-url is required when --block-trace.enabled is set")
+            })?;
+            let filter = FilterConfig {
+                drop_trivial: ctx.config.block_trace.drop_trivial,
+                keep_selectors: ctx.config.block_trace.keep_selectors.clone(),
+                keep_addresses: ctx.config.block_trace.keep_addresses.clone(),
+            };
+            let (sender, _handle) = spawn_ws_task(
+                ctx.node.task_executor(),
+                url,
+                std::time::Duration::from_millis(ctx.config.block_trace.reconnect_interval_ms),
+                filter.clone(),
+            );
+            Some(BlockTraceHandle { sender, filter })
+        } else {
+            None
+        };
+
         Ok(BasicEngineValidator::new(
             ctx.node.provider().clone(),
             std::sync::Arc::new(ctx.node.consensus().clone()),
@@ -1478,6 +1499,7 @@ where
             changeset_cache,
             state_trie_overlays,
             ctx.node.task_executor().clone(),
+            block_trace,
         ))
     }
 }

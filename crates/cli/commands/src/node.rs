@@ -9,7 +9,8 @@ use reth_db::init_db;
 use reth_node_builder::NodeBuilder;
 use reth_node_core::{
     args::{
-        DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, EraArgs, JitArgs, MetricArgs,
+        BlockTraceArgs, DatabaseArgs, DatadirArgs, DebugArgs, DevArgs, EngineArgs, EraArgs, JitArgs,
+        MetricArgs,
         NetworkArgs, PayloadBuilderArgs, PruningArgs, RpcServerArgs, StaticFilesArgs, StorageArgs,
         TxPoolArgs,
     },
@@ -123,6 +124,10 @@ pub struct NodeCommand<C: ChainSpecParser, Ext: clap::Args + fmt::Debug = NoArgs
     #[command(flatten, next_help_heading = "JIT")]
     pub jit: JitArgs,
 
+    /// All block call-tree streaming arguments with --block-trace prefix
+    #[command(flatten, next_help_heading = "Block Trace")]
+    pub block_trace: BlockTraceArgs,
+
     /// Additional cli arguments
     #[command(flatten, next_help_heading = "Extension")]
     pub ext: Ext,
@@ -180,6 +185,7 @@ where
             static_files,
             storage,
             jit,
+            block_trace,
             ext,
         } = self;
 
@@ -205,6 +211,7 @@ where
             static_files,
             storage,
             jit,
+            block_trace,
         };
 
         let data_dir = node_config.datadir();
