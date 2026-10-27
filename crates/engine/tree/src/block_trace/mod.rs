@@ -3,7 +3,7 @@ pub mod filter;
 pub mod inspector;
 pub mod ws;
 
-pub use event::{CallNode, CallKind, CallTree, TraceEvent, TxTraceCtx};
+pub use event::{CallKind, CallNode, CallTree, TraceEvent, TxTraceCtx};
 pub use filter::{should_emit, FilterConfig};
 pub use inspector::CallTreeInspector;
 

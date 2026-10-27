@@ -95,15 +95,18 @@
 //! before a payload build job starts. On failure, the engine returns
 //! `INVALID_PAYLOAD_ATTRIBUTES` without rolling back the forkchoice update.
 
-use crate::block_trace::{BlockTraceHandle, CallTreeInspector, TraceEvent, TxTraceCtx};
-use crate::tree::{
-    error::{InsertBlockError, InsertBlockErrorKind, InsertPayloadError},
-    instrumented_state::{InstrumentedStateProvider, StateProviderMetrics, StateProviderStats},
-    payload_processor::PayloadProcessor,
-    precompile_cache::{CachedPrecompile, CachedPrecompileMetrics, PrecompileCacheMap},
-    types::{InsertPayloadResult, ValidationOutput},
-    CacheWaitDurations, CachedStateProvider, EngineApiMetrics, EngineApiTreeState, ExecutionEnv,
-    PayloadHandle, StateProviderBuilder, StateProviderDatabase, TreeConfig, WaitForCaches,
+use crate::{
+    block_trace::{BlockTraceHandle, CallTreeInspector, TraceEvent, TxTraceCtx},
+    tree::{
+        error::{InsertBlockError, InsertBlockErrorKind, InsertPayloadError},
+        instrumented_state::{InstrumentedStateProvider, StateProviderMetrics, StateProviderStats},
+        payload_processor::PayloadProcessor,
+        precompile_cache::{CachedPrecompile, CachedPrecompileMetrics, PrecompileCacheMap},
+        types::{InsertPayloadResult, ValidationOutput},
+        CacheWaitDurations, CachedStateProvider, EngineApiMetrics, EngineApiTreeState,
+        ExecutionEnv, PayloadHandle, StateProviderBuilder, StateProviderDatabase, TreeConfig,
+        WaitForCaches,
+    },
 };
 use alloy_consensus::transaction::{Either, TxHashRef};
 use alloy_eip7928::{bal::DecodedBal, compute_block_access_list_hash, BlockAccessList};

@@ -1,13 +1,13 @@
-use crate::block_trace::event::{CallTree, TraceEvent};
-use crate::block_trace::filter::{should_emit, FilterConfig};
+use crate::block_trace::{
+    event::{CallTree, TraceEvent},
+    filter::{should_emit, FilterConfig},
+};
 use alloy_primitives::{Address, B256};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
-use std::collections::VecDeque;
-use std::time::Duration;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, tungstenite::Message};
+use std::{collections::VecDeque, time::Duration};
+use tokio::{net::TcpStream, sync::mpsc};
+use tokio_tungstenite::{tungstenite::Message, MaybeTlsStream, WebSocketStream};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
