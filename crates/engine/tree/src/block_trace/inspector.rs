@@ -1,7 +1,8 @@
 use crate::block_trace::event::{CallKind, CallNode, CallTree, TraceEvent};
-use alloy_primitives::Address;
+use alloy_primitives::{Address, Log};
 use revm::{
     context::ContextTr,
+    context_interface::CreateScheme,
     inspector::Inspector,
     interpreter::{
         CallInputs, CallOutcome, CallScheme, CreateInputs, CreateOutcome, InterpreterTypes,
@@ -36,10 +37,9 @@ impl CallTreeInspector {
             } else {
                 let index = self.frame_seq;
                 self.frame_seq += 1;
-                let _ = self.sender.try_send(TraceEvent::TxTree {
-                    index,
-                    tree: CallTree { root: node },
-                });
+                let _ = self
+                    .sender
+                    .try_send(TraceEvent::TxTree { index, tree: CallTree { root: node } });
             }
         }
     }
@@ -48,12 +48,8 @@ impl CallTreeInspector {
 impl<CTX: ContextTr, INTR: InterpreterTypes> Inspector<CTX, INTR> for CallTreeInspector {
     fn call(&mut self, context: &mut CTX, inputs: &mut CallInputs) -> Option<CallOutcome> {
         let input = inputs.input.as_bytes_local(context.local());
-        let selector = (input.len() >= 4).then(|| {
-            format!(
-                "0x{:02x}{:02x}{:02x}{:02x}",
-                input[0], input[1], input[2], input[3]
-            )
-        });
+        let selector = (input.len() >= 4)
+            .then(|| format!("0x{:02x}{:02x}{:02x}{:02x}", input[0], input[1], input[2], input[3]));
         let kind = match inputs.scheme {
             CallScheme::Call => CallKind::Call,
             CallScheme::CallCode => CallKind::CallCode,
@@ -69,6 +65,9 @@ impl<CTX: ContextTr, INTR: InterpreterTypes> Inspector<CTX, INTR> for CallTreeIn
             success: false,
             gas_used: 0,
             calls: Vec::new(),
+            init_code: None,
+            runtime_code: None,
+            logs: Vec::new(),
         });
         None
     }
@@ -78,16 +77,23 @@ impl<CTX: ContextTr, INTR: InterpreterTypes> Inspector<CTX, INTR> for CallTreeIn
     }
 
     fn create(&mut self, _context: &mut CTX, inputs: &mut CreateInputs) -> Option<CreateOutcome> {
+        let kind = match inputs.scheme() {
+            CreateScheme::Create | CreateScheme::Custom { .. } => CallKind::Create,
+            CreateScheme::Create2 { .. } => CallKind::Create2,
+        };
         self.stack.push(CallNode {
-            kind: CallKind::Create,
+            kind,
             from: inputs.caller(),
-            // The created address depends on the caller nonce; not resolved here.
+            // The created address depends on the caller nonce; backfilled in `create_end`.
             to: Address::ZERO,
             selector: None,
             value: inputs.value(),
             success: false,
             gas_used: 0,
             calls: Vec::new(),
+            init_code: Some(inputs.init_code().clone()),
+            runtime_code: None,
+            logs: Vec::new(),
         });
         None
     }
@@ -98,6 +104,26 @@ impl<CTX: ContextTr, INTR: InterpreterTypes> Inspector<CTX, INTR> for CallTreeIn
         _inputs: &CreateInputs,
         outcome: &mut CreateOutcome,
     ) {
-        self.finish_frame(outcome.instruction_result().is_ok(), outcome.gas().spent());
+        let success = outcome.instruction_result().is_ok();
+        // Backfill before `finish_frame` pops the node: the stack top is the
+        // frame `create` pushed (nested frames have already been popped). The
+        // address is resolved by revm even on revert; the output is runtime
+        // code only on success (otherwise it is revert data).
+        if let Some(node) = self.stack.last_mut() {
+            if let Some(addr) = outcome.address {
+                node.to = addr;
+            }
+            if success {
+                node.runtime_code = Some(outcome.output().clone());
+            }
+        }
+        self.finish_frame(success, outcome.gas().spent());
+    }
+
+    fn log(&mut self, _context: &mut CTX, log: Log) {
+        // `LOG*` runs in the innermost frame, so the stack top is the emitter.
+        if let Some(node) = self.stack.last_mut() {
+            node.logs.push(log);
+        }
     }
 }

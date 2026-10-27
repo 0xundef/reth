@@ -1,4 +1,4 @@
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, Bytes, Log, B256, U256};
 use serde::Serialize;
 
 /// Type of a call frame.
@@ -10,6 +10,7 @@ pub enum CallKind {
     StaticCall,
     CallCode,
     Create,
+    Create2,
 }
 
 /// A single node in a call tree.
@@ -27,6 +28,20 @@ pub struct CallNode {
     pub gas_used: u64,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calls: Vec<CallNode>,
+    /// Init code executed by the constructor (create frames only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub init_code: Option<Bytes>,
+    /// Deployed runtime code, set only when the create succeeded (create frames only).
+    /// On failure the interpreter output is revert data, not bytecode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime_code: Option<Bytes>,
+    /// Event logs emitted by this frame (`LOG0`-`LOG4`).
+    ///
+    /// Under delegatecall the log address is the calling (storage) context,
+    /// not this frame's target — EVM attribute logs to `ADDRESS`, which stays
+    /// the proxy during a delegatecall.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub logs: Vec<Log>,
 }
 
 /// Call tree of a single transaction.

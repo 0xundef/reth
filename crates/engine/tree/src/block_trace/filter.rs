@@ -15,10 +15,12 @@ pub struct FilterConfig {
 /// Returns whether a tree should be forwarded to the matcher.
 ///
 /// A *trivial* tree is a single flat call (no internal calls, no delegatecall,
-/// zero value) that is fully described by the raw transaction — the matcher
-/// gains nothing from it. This is a structural test, not a contract watchlist:
-/// any tree with internal activity survives regardless of which contracts are
-/// involved, so there is no "unlisted contract" blind spot.
+/// zero value, no emitted logs) that is fully described by the raw
+/// transaction — the matcher gains nothing from it. Trees carrying event logs
+/// are never trivial: the logs are not part of the raw transaction and are the
+/// primary signal for downstream matching. This is a structural test, not a
+/// contract watchlist: any tree with internal activity survives regardless of
+/// which contracts are involved, so there is no "unlisted contract" blind spot.
 pub fn should_emit(tree: &CallTree, cfg: &FilterConfig) -> bool {
     if !cfg.drop_trivial {
         return true;
@@ -35,10 +37,14 @@ pub fn should_emit(tree: &CallTree, cfg: &FilterConfig) -> bool {
     if cfg.keep_addresses.contains(&root.to) {
         return true;
     }
-    if !root.calls.is_empty() || contains_kind(root, CallKind::DelegateCall) {
+    if !root.calls.is_empty() || contains_kind(root, CallKind::DelegateCall) || has_logs(root) {
         return true;
     }
     false
+}
+
+fn has_logs(node: &CallNode) -> bool {
+    !node.logs.is_empty() || node.calls.iter().any(has_logs)
 }
 
 fn contains_kind(node: &CallNode, kind: CallKind) -> bool {
